@@ -1,0 +1,12 @@
+{% for key, value in config|dictsort %}
+  {% if value is sequence and value is not string %}
+{{ key }}="
+  {% for k, v in value|dictsort %}
+{{ k }}{% if v is not none %}={{ v }}{% endif %}
+
+{% endfor %}"
+  {% else %}
+{{ key }}="{{ value }}"
+  {% endif %}
+{% endfor %}
+

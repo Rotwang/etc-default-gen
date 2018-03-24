@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+
+import argparse
+from collections import Iterable
+from jinja2 import Environment
+import os
+from subprocess import check_call
+import yaml
+
+
+def parse_cli():
+    def config_path_append(e):
+        config_path = "/etc/tomcat7-configure"
+        return os.path.join(config_path, e)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", "--start-tomcat",
+                        action="store_true",
+                        help="Start tomcat after reconfiguring it.",
+                        default=False)
+    parser.add_argument("-n", "--enable-tomcat",
+                        action="store_true",
+                        help="Enable tomcat after reconfiguring it.",
+                        default=False)
+    parser.add_argument("-a", "--activate-tomcat",
+                        action="store_true",
+                        help="Implies -s and -n.",
+                        default=False)
+    parser.add_argument("-d", "--defaults",
+                        action="store",
+                        type=str,
+                        help="Default options for liita.",
+                        default=config_path_append("defaults.yaml"))
+    parser.add_argument("-r", "--overrides",
+                        action="store",
+                        type=str,
+                        help="Override default options for liita.",
+                        default=config_path_append("overrides.yaml"))
+    parser.add_argument("-e", "--excludes",
+                        action="store",
+                        type=str,
+                        help="Remove given options from liita.",
+                        default=config_path_append("excludes.yaml"))
+    parser.add_argument("-t", "--template",
+                        action="store",
+                        type=str,
+                        help="Defaults tomcat7 template.",
+                        default=config_path_append("tomcat7.j2"))
+    parser.add_argument("-o", "--output",
+                        action="store",
+                        type=str,
+                        help="tomcat7 defaults file output location.",
+                        default="/etc/default/tomcat7")
+
+    return parser.parse_args()
+
+
+def parse_yml(yaml_file):
+    with open(yaml_file, 'r') as fh:
+        y = yaml.safe_load(fh)
+    return y if (are_iterable(y) and not are_string(y)) else {}
+
+
+def both_are_dicts(a, b):
+    return isinstance(a, dict) and isinstance(b, dict)
+
+
+def are_iterable(*elems):
+    return all(map(lambda e: isinstance(e, Iterable), elems))
+
+
+def are_string(*elems):
+    return all(map(lambda e: isinstance(e, str), elems))
+
+
+# https://stackoverflow.com/questions/7204805/dictionaries-of-dictionaries-merge/7205107#7205107
+def merge_configs(a_orig, b):
+    "merges b into a"
+    a = a_orig
+    for key in b:
+        if key in a:
+            if both_are_dicts(a[key], b[key]):
+                merge_configs(a[key], b[key])
+            else:
+                a[key] = b[key]
+        else:
+            a[key] = b[key]
+    return a
+
+
+def filter_config(a_orig, e):
+    a = a_orig
+    for key in e:
+        if key in a:
+            if both_are_dicts(a[key], e[key]):
+                filter_config(a[key], e[key])
+            else:
+                del a[key]
+    return a
+
+
+if __name__ == "__main__":
+    cli_args = parse_cli()
+
+    defaults = parse_yml(cli_args.defaults)
+    overrides = parse_yml(cli_args.overrides)
+    excludes = parse_yml(cli_args.excludes)
+
+    filtered = filter_config(merge_configs(defaults, overrides), excludes)
+    filtered = {} if filtered is None else filtered
+
+    for key, value in filtered['CATALINA_OPTS'].items():
+        if value is not None and isinstance(value, str):
+            if not value.startswith('\'') or not value.endswith('\''):
+                filtered['CATALINA_OPTS'][key] = '\'' + value + '\''
+
+    with open(cli_args.template, 'r') as fh:
+        env = Environment(trim_blocks=True, lstrip_blocks=True)
+        document = env.from_string(fh.read()).render(config=filtered)
+    with open(cli_args.output, 'w') as wh:
+        wh.write(document)
+
+    if cli_args.enable_tomcat or cli_args.activate_tomcat:
+        check_call(["systemctl", "enable", "tomcat7"])
+    if cli_args.start_tomcat or cli_args.activate_tomcat:
+        check_call(["systemctl", "start", "tomcat7"])
